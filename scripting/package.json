@@ -1,0 +1,9 @@
+{
+  "name": "scripting",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test:rate-limit": "bun run rate-limit.ts"
+  }
+}
