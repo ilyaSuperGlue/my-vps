@@ -19,7 +19,8 @@ use crate::middleware::logging::{LogConfig, log_requests};
 
 #[derive(Clone)]
 pub struct GlobalState {
-    sys: Arc<Mutex<System>>,
+    pub(crate) sys: Arc<Mutex<System>>,
+    pub(crate) search_query: String,
 }
 
 #[tokio::main]
@@ -57,6 +58,7 @@ async fn main() {
 
     let server_state = GlobalState {
         sys: Arc::new(Mutex::new(sys)),
+        search_query: std::env::var("JOB_SEARCH_QUERY").unwrap_or_default(),
     };
 
     async fn fallback(uri: Uri) -> (StatusCode, String) {
