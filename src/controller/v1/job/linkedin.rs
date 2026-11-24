@@ -18,7 +18,7 @@ use std::{
 use tokio::task;
 
 const PUBLIC_API_URL: &str = "https://api.ilyasuperglue.tech";
-const JOB_CACHE_TTL_SECONDS: i64 = 10 * 60;
+const JOB_CACHE_TTL_SECONDS: i64 = 12 * 60;
 const JOB_CACHE_PATH: &str = "data/jobs.sqlite3";
 
 fn open_cache() -> rusqlite::Result<Connection> {
