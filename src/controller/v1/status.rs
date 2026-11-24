@@ -10,16 +10,16 @@ use crate::GlobalState;
 use crate::constant::unit::Unit;
 use crate::utils::floor;
 
-#[derive(Serialize)]
-struct DiskInfo {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct DiskInfo {
     name: String,
     total_space: f64,
     available_space: f64,
     mount_point: String,
 }
 
-#[derive(Serialize)]
-struct ServerStatus {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ServerStatus {
     cpu_usage_percent: f64,
     total_memory: f64,
     used_memory: f64,
@@ -32,7 +32,17 @@ struct ServerStatus {
     os: Option<String>,
 }
 
-async fn get_server_status(
+#[utoipa::path(
+    get,
+    path = "/v1/status",
+    params(
+        ("unit" = Option<String>, Query, description = "Memory and disk unit: KB, MB, or GB")
+    ),
+    responses(
+        (status = 200, description = "Server status", body = ServerStatus)
+    )
+)]
+pub(crate) async fn get_server_status(
     State(state): State<GlobalState>,
     Query(query): Query<StatusQuery>,
 ) -> Json<ServerStatus> {
@@ -79,10 +89,11 @@ async fn get_server_status(
     })
 }
 
-#[derive(Debug, Deserialize)]
-struct StatusQuery {
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub(crate) struct StatusQuery {
     #[serde(default)]
-    unit: Option<String>,
+    #[param(default = "MB")]
+    pub(crate) unit: Option<String>,
 }
 
 pub fn router() -> Router<GlobalState> {

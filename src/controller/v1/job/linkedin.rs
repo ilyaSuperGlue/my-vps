@@ -1,5 +1,5 @@
 use crate::utils::linkedin_scraper::{
-    JobPosting, fetch_linkedin_job_detail, fetch_linkedin_jobs_in_location, linkedin_job_id,
+    JobPosting, fetch_linkedin_job_detail, fetch_linkedin_jobs_in_location_page, linkedin_job_id,
 };
 
 use axum::{
@@ -28,7 +28,9 @@ fn open_cache() -> rusqlite::Result<Connection> {
     }
     let connection = Connection::open(JOB_CACHE_PATH)?;
     connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS job_cache (
+        "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
+         CREATE TABLE IF NOT EXISTS job_cache (
             cache_key TEXT PRIMARY KEY,
             fetched_at INTEGER NOT NULL,
             jobs_json TEXT NOT NULL
@@ -75,11 +77,18 @@ async fn write_cached_jobs(cache_key: &str, jobs: &[JobPosting]) -> anyhow::Resu
     .await?
 }
 
-#[derive(Deserialize)]
-struct JobsQuery {
-    country: Option<String>,
-    search: Option<String>,
-    hours_old: Option<std::num::NonZeroU32>,
+#[derive(Deserialize, utoipa::IntoParams)]
+pub(crate) struct JobsQuery {
+    #[param(default = "Malaysia")]
+    pub(crate) country: Option<String>,
+    #[param(default = "React Native")]
+    pub(crate) search: Option<String>,
+    #[param(default = 168)]
+    pub(crate) hours_old: Option<u32>,
+    #[param(default = 1)]
+    pub(crate) page: Option<u32>,
+    #[param(default = 20)]
+    pub(crate) limit: Option<u32>,
 }
 
 fn country_location(country: &str) -> Option<&'static str> {
@@ -92,21 +101,35 @@ fn country_location(country: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(Serialize)]
-struct ListedJob {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ListedJob {
     #[serde(flatten)]
     job: JobPosting,
     check_detail: Option<String>,
+    linkedin_url: String,
 }
 
-#[derive(Serialize)]
-struct JobDetail {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct Pagination {
+    page: u32,
+    limit: u32,
+    has_more: bool,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct JobsPage {
+    jobs: Vec<ListedJob>,
+    pagination: Pagination,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct JobDetail {
     id: String,
     description: String,
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ErrorResponse {
     error: String,
 }
 
@@ -116,18 +139,28 @@ impl IntoResponse for ErrorResponse {
     }
 }
 
-#[derive(Serialize)]
-struct ApiResponse<T: Serialize> {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ApiResponse<T: Serialize + utoipa::ToSchema> {
     success: bool,
     data: T,
 }
 
-impl<T: Serialize> IntoResponse for ApiResponse<T> {
+impl<T: Serialize + utoipa::ToSchema> IntoResponse for ApiResponse<T> {
     fn into_response(self) -> axum::response::Response {
         Json(self).into_response()
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/jobs/linkedin",
+    params(JobsQuery),
+    responses(
+        (status = 200, description = "LinkedIn jobs", body = ApiResponse<JobsPage>),
+        (status = 400, description = "Invalid country", body = ErrorResponse),
+        (status = 502, description = "Job source unavailable", body = ErrorResponse)
+    )
+)]
 async fn get_jobs(
     State(state): State<crate::GlobalState>,
     Query(query): Query<JobsQuery>,
@@ -150,25 +183,43 @@ async fn get_jobs(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(&state.search_query);
-    let hours_old = query.hours_old.map_or(168, std::num::NonZeroU32::get);
-    let cache_key = serde_json::to_string(&(search, location.unwrap_or_default(), hours_old))
-        .map_err(|error| {
-            ErrorResponse {
-                error: format!("Failed to create cache key: {error}"),
-            }
-            .into_response()
-        })?;
+    let hours_old = query.hours_old.unwrap_or(168);
+    let page = query.page.unwrap_or(1);
+    let limit = query.limit.unwrap_or(20);
+    if page == 0 || !(1..=40).contains(&limit) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "page must be at least 1 and limit must be between 1 and 40".into(),
+            }),
+        )
+            .into_response());
+    }
+    let cache_key =
+        serde_json::to_string(&(search, location.unwrap_or_default(), hours_old, page, limit))
+            .map_err(|error| {
+                ErrorResponse {
+                    error: format!("Failed to create cache key: {error}"),
+                }
+                .into_response()
+            })?;
     let jobs = match read_cached_jobs(&cache_key).await {
         Ok(Some(jobs)) => jobs,
         Ok(None) => {
-            let jobs = fetch_linkedin_jobs_in_location(search, 20, location, Some(hours_old))
-                .await
-                .map_err(|error| {
-                    ErrorResponse {
-                        error: format!("Failed to fetch jobs: {error}"),
-                    }
-                    .into_response()
-                })?;
+            let jobs = fetch_linkedin_jobs_in_location_page(
+                search,
+                limit as usize,
+                location,
+                Some(hours_old),
+                page,
+            )
+            .await
+            .map_err(|error| {
+                ErrorResponse {
+                    error: format!("Failed to fetch jobs: {error}"),
+                }
+                .into_response()
+            })?;
             if let Err(error) = write_cached_jobs(&cache_key, &jobs).await {
                 tracing::warn!(%error, "Failed to write jobs cache");
             }
@@ -176,31 +227,62 @@ async fn get_jobs(
         }
         Err(error) => {
             tracing::warn!(%error, "Failed to read jobs cache");
-            fetch_linkedin_jobs_in_location(search, 20, location, Some(hours_old))
-                .await
-                .map_err(|error| {
-                    ErrorResponse {
-                        error: format!("Failed to fetch jobs: {error}"),
-                    }
-                    .into_response()
-                })?
+            fetch_linkedin_jobs_in_location_page(
+                search,
+                limit as usize,
+                location,
+                Some(hours_old),
+                page,
+            )
+            .await
+            .map_err(|error| {
+                ErrorResponse {
+                    error: format!("Failed to fetch jobs: {error}"),
+                }
+                .into_response()
+            })?
         }
     };
+    let has_more = jobs.len() == limit as usize;
     let response = ApiResponse {
         success: true,
-        data: jobs
-            .into_iter()
-            .map(|job| {
-                let check_detail = linkedin_job_id(&job.url)
-                    .map(|id| format!("{PUBLIC_API_URL}/v1/jobs/linkedin/{id}"));
-                ListedJob { job, check_detail }
-            })
-            .collect::<Vec<_>>(),
+        data: JobsPage {
+            jobs: jobs
+                .into_iter()
+                .map(|job| {
+                    let check_detail = linkedin_job_id(&job.url)
+                        .map(|id| format!("{PUBLIC_API_URL}/v1/jobs/linkedin/{id}"));
+                    let linkedin_url = job.url.clone();
+                    ListedJob {
+                        job,
+                        check_detail,
+                        linkedin_url,
+                    }
+                })
+                .collect(),
+            pagination: Pagination {
+                page,
+                limit,
+                has_more,
+            },
+        },
     };
     Ok(response)
 }
 
-pub async fn get_job_detail(
+#[utoipa::path(
+    get,
+    path = "/v1/jobs/linkedin/{id}",
+    params(
+        ("id" = String, Path, description = "LinkedIn job ID")
+    ),
+    responses(
+        (status = 200, description = "Job description", body = ApiResponse<JobDetail>),
+        (status = 400, description = "Invalid job ID", body = ErrorResponse),
+        (status = 502, description = "Job source unavailable", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn get_job_detail(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, axum::response::Response> {
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {

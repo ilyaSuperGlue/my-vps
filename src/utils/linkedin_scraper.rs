@@ -1,9 +1,9 @@
 use anyhow::Context;
 use reqwest::Error;
 use scraper::{Html, Selector};
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, sync::OnceLock, time::Duration};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct JobPosting {
     pub title: String,
     pub company: String,
@@ -18,19 +18,26 @@ const LINKEDIN_GUEST_JOBS_URL: &str =
 const JOBS_PER_PAGE: usize = 10;
 const MAX_PAGES: usize = 4;
 
-pub async fn fetch_linkedin_jobs_in_location(
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+pub async fn fetch_linkedin_jobs_in_location_page(
     search_query: &str,
     max_results: usize,
     location: Option<&str>,
     hours_old: Option<u32>,
+    page: u32,
 ) -> anyhow::Result<Vec<JobPosting>> {
     let posted_within = hours_old.map(|hours| format!("r{}", u64::from(hours) * 3600));
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut jobs = Vec::new();
     let mut seen = HashSet::new();
-    let mut start = 0;
+    let mut start = page.saturating_sub(1) as usize * JOBS_PER_PAGE;
+    let pages_needed = max_results.div_ceil(JOBS_PER_PAGE).min(MAX_PAGES);
 
-    for _ in 0..MAX_PAGES {
+    for _ in 0..pages_needed {
         if jobs.len() >= max_results {
             break;
         }
@@ -109,7 +116,7 @@ fn job_key(url: &str) -> &str {
 }
 
 pub async fn fetch_linkedin_job_detail(id: &str) -> anyhow::Result<String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(format!(
             "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}"
         ))

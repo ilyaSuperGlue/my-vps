@@ -14,6 +14,8 @@ use std::{net::SocketAddr, time::Duration};
 use sysinfo::System;
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tracing_appender::{non_blocking, rolling};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::middleware::logging::{LogConfig, log_requests};
 
@@ -58,7 +60,10 @@ async fn main() {
 
     let server_state = GlobalState {
         sys: Arc::new(Mutex::new(sys)),
-        search_query: std::env::var("JOB_SEARCH_QUERY").unwrap_or_default(),
+        search_query: std::env::var("JOB_SEARCH_QUERY")
+            .ok()
+            .filter(|query| !query.trim().is_empty())
+            .unwrap_or_else(|| "React Native".to_owned()),
     };
 
     async fn fallback(uri: Uri) -> (StatusCode, String) {
@@ -81,6 +86,11 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(health_check))
+        .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", controller::JobsApiDoc::openapi()))
+        .merge(
+            SwaggerUi::new("/docs/all")
+                .url("/docs/all/openapi.json", controller::ApiDoc::openapi()),
+        )
         .merge(controller::router())
         .with_state(server_state)
         .layer(GovernorLayer::new(governor_conf))
