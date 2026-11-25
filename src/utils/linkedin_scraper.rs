@@ -5,12 +5,34 @@ use std::{collections::HashSet, sync::OnceLock, time::Duration};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct JobPosting {
+    pub id: Option<String>,
     pub title: String,
     pub company: String,
+    pub company_url: Option<String>,
     pub location: String,
     pub url: String,
     pub posted_time: String,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct LinkedInJobDetail {
+    pub id: String,
+    pub title: Option<String>,
+    pub company: Option<String>,
+    pub company_url: Option<String>,
+    pub location: Option<String>,
+    pub posted_time: Option<String>,
+    pub employment_type: Option<String>,
+    pub workplace_type: Option<String>,
+    pub description: String,
+    pub criteria: Vec<JobCriterion>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct JobCriterion {
+    pub label: String,
+    pub value: String,
 }
 
 const LINKEDIN_GUEST_JOBS_URL: &str =
@@ -115,7 +137,7 @@ fn job_key(url: &str) -> &str {
     linkedin_job_id(url).unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url))
 }
 
-pub async fn fetch_linkedin_job_detail(id: &str) -> anyhow::Result<String> {
+pub async fn fetch_linkedin_job_detail(id: &str) -> anyhow::Result<LinkedInJobDetail> {
     let response = http_client()
         .get(format!(
             "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}"
@@ -126,12 +148,12 @@ pub async fn fetch_linkedin_job_detail(id: &str) -> anyhow::Result<String> {
         .map_err(Error::without_url)?;
     check_linkedin_status(response.status())?;
     let body = response.text().await.map_err(Error::without_url)?;
-    parse_job_description(&body).context("LinkedIn job page did not contain a description")
+    parse_job_detail(&body, id).context("LinkedIn job page did not contain a description")
 }
 
 fn parse_job_description(body: &str) -> Option<String> {
     let document = Html::parse_document(body);
-    let selector = Selector::parse(".show-more-less-html__markup").unwrap();
+    let selector = Selector::parse(".show-more-less-html__markup, .description__text").unwrap();
     let description = document
         .select(&selector)
         .next()?
@@ -140,6 +162,67 @@ fn parse_job_description(body: &str) -> Option<String> {
         .join(" ");
     let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
     (!description.is_empty()).then_some(description)
+}
+
+fn parse_job_detail(body: &str, id: &str) -> Option<LinkedInJobDetail> {
+    let document = Html::parse_document(body);
+    let text = |selector: &str| -> Option<String> {
+        let selector = Selector::parse(selector).ok()?;
+        let value = document
+            .select(&selector)
+            .next()?
+            .text()
+            .collect::<String>();
+        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!value.is_empty()).then_some(value)
+    };
+    let description = parse_job_description(body)?;
+    let criteria_selector = Selector::parse(".description__job-criteria-item").ok()?;
+    let label_selector = Selector::parse(".description__job-criteria-subheader").ok()?;
+    let value_selector = Selector::parse(".description__job-criteria-text").ok()?;
+    let criteria: Vec<JobCriterion> = document
+        .select(&criteria_selector)
+        .filter_map(|item| {
+            let label = item
+                .select(&label_selector)
+                .next()?
+                .text()
+                .collect::<String>();
+            let value = item
+                .select(&value_selector)
+                .next()?
+                .text()
+                .collect::<String>();
+            let clean = |value: String| value.split_whitespace().collect::<Vec<_>>().join(" ");
+            Some(JobCriterion {
+                label: clean(label),
+                value: clean(value),
+            })
+        })
+        .collect();
+
+    Some(LinkedInJobDetail {
+        id: id.to_owned(),
+        title: text(".top-card-layout__title, .top-card__title"),
+        company: text(".top-card-layout__company-name, .top-card__org-name"),
+        company_url: Selector::parse(".top-card-layout__company-url, .top-card__org-name a")
+            .ok()
+            .and_then(|selector| document.select(&selector).next())
+            .and_then(|element| element.value().attr("href"))
+            .map(ToOwned::to_owned),
+        location: text(".top-card-layout__second-subline .top-card__flavor, .top-card__flavor"),
+        posted_time: text(".posted-time-ago__text"),
+        employment_type: criteria
+            .iter()
+            .find(|item| item.label.eq_ignore_ascii_case("Employment type"))
+            .map(|item| item.value.clone()),
+        workplace_type: criteria
+            .iter()
+            .find(|item| item.label.eq_ignore_ascii_case("Workplace type"))
+            .map(|item| item.value.clone()),
+        description,
+        criteria,
+    })
 }
 
 fn parse_jobs(body: &str, base_url: &reqwest::Url, max_results: usize) -> (Vec<JobPosting>, usize) {
@@ -195,10 +278,20 @@ fn parse_jobs(body: &str, base_url: &reqwest::Url, max_results: usize) -> (Vec<J
             .and_then(|e| e.value().attr("datetime"))
             .unwrap_or("")
             .to_string();
+        let company_url = element
+            .select(&company_selector)
+            .next()
+            .and_then(|company| company.select(&link_selector).next())
+            .and_then(|link| link.value().attr("href"))
+            .and_then(|href| base_url.join(href).ok())
+            .map(|url| url.to_string());
+        let id = linkedin_job_id(&url);
 
         jobs.push(JobPosting {
+            id: id.map(str::to_owned),
             title,
             company,
+            company_url,
             location,
             url,
             posted_time,

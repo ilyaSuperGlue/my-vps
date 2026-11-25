@@ -9,12 +9,15 @@ use utoipa::OpenApi;
     paths(
         status::get_server_status,
         job::linkedin::get_jobs,
-        job::linkedin::get_job_detail
+        job::linkedin::get_job_detail,
+        job::jobstreet::get_jobs,
+        job::jobstreet::get_job_detail
     ),
     components(schemas(
         status::DiskInfo,
         status::ServerStatus,
-
+        crate::utils::linkedin_scraper::LinkedInJobDetail,
+        crate::utils::linkedin_scraper::JobCriterion,
         job::linkedin::ListedJob,
         job::linkedin::Pagination,
         job::linkedin::JobsPage,
@@ -22,7 +25,12 @@ use utoipa::OpenApi;
         job::linkedin::ErrorResponse,
         job::linkedin::ApiResponse<Vec<job::linkedin::ListedJob>>,
         job::linkedin::ApiResponse<job::linkedin::JobDetail>,
-        crate::utils::linkedin_scraper::JobPosting
+        crate::utils::linkedin_scraper::JobPosting,
+        crate::utils::jobstreet_scraper::JobStreetPosting,
+        job::jobstreet::JobStreetPagination,
+        job::jobstreet::JobStreetJobsPage,
+        job::jobstreet::JobStreetErrorResponse,
+        job::jobstreet::JobStreetApiResponse<job::jobstreet::JobStreetJobsPage>
     ))
 )]
 pub struct ApiDoc;
@@ -31,7 +39,9 @@ pub struct ApiDoc;
 #[openapi(
     paths(
         job::linkedin::get_jobs,
-        job::linkedin::get_job_detail
+        job::linkedin::get_job_detail,
+        job::jobstreet::get_jobs,
+        job::jobstreet::get_job_detail
     ),
     components(schemas(
         job::linkedin::ListedJob,
@@ -42,7 +52,12 @@ pub struct ApiDoc;
         job::linkedin::ApiResponse<Vec<job::linkedin::ListedJob>>,
         job::linkedin::ApiResponse<job::linkedin::JobsPage>,
         job::linkedin::ApiResponse<job::linkedin::JobDetail>,
-        crate::utils::linkedin_scraper::JobPosting
+        crate::utils::linkedin_scraper::JobPosting,
+        crate::utils::jobstreet_scraper::JobStreetPosting,
+        job::jobstreet::JobStreetPagination,
+        job::jobstreet::JobStreetJobsPage,
+        job::jobstreet::JobStreetErrorResponse,
+        job::jobstreet::JobStreetApiResponse<job::jobstreet::JobStreetJobsPage>
     ))
 )]
 pub struct JobsApiDoc;

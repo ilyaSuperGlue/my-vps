@@ -1,5 +1,6 @@
 use crate::utils::linkedin_scraper::{
-    JobPosting, fetch_linkedin_job_detail, fetch_linkedin_jobs_in_location_page, linkedin_job_id,
+    JobPosting, LinkedInJobDetail, fetch_linkedin_job_detail, fetch_linkedin_jobs_in_location_page,
+    linkedin_job_id,
 };
 
 use axum::{
@@ -124,8 +125,8 @@ pub(crate) struct JobsPage {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub(crate) struct JobDetail {
-    id: String,
-    description: String,
+    #[serde(flatten)]
+    detail: LinkedInJobDetail,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -294,7 +295,7 @@ pub(crate) async fn get_job_detail(
         )
             .into_response());
     }
-    let description = fetch_linkedin_job_detail(&id).await.map_err(|error| {
+    let detail = fetch_linkedin_job_detail(&id).await.map_err(|error| {
         ErrorResponse {
             error: format!("Failed to fetch job detail: {error}"),
         }
@@ -302,7 +303,7 @@ pub(crate) async fn get_job_detail(
     })?;
     Ok(ApiResponse {
         success: true,
-        data: JobDetail { id, description },
+        data: JobDetail { detail },
     })
 }
 
