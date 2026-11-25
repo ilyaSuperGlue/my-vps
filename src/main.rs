@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::{net::SocketAddr, time::Duration};
 use sysinfo::System;
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
+use tower_http::compression::CompressionLayer;
 use tracing_appender::{non_blocking, rolling};
 use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
+use utoipa_scalar::{Scalar, Servable};
 
 use crate::middleware::logging::{LogConfig, log_requests};
 
@@ -86,14 +87,12 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(health_check))
-        .merge(SwaggerUi::new("/docs").url("/docs/openapi.json", controller::JobsApiDoc::openapi()))
-        .merge(
-            SwaggerUi::new("/docs/all")
-                .url("/docs/all/openapi.json", controller::ApiDoc::openapi()),
-        )
+        .merge(Scalar::with_url("/docs", controller::JobsApiDoc::openapi()))
+        .merge(Scalar::with_url("/docs/all", controller::ApiDoc::openapi()))
         .merge(controller::router())
         .with_state(server_state)
         .layer(GovernorLayer::new(governor_conf))
+        .layer(CompressionLayer::new())
         .route_layer(mid::from_fn_with_state(LogConfig::default(), log_requests))
         .fallback(fallback);
 
